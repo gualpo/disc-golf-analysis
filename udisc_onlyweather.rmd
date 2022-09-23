@@ -1,0 +1,91 @@
+---
+title: "Udisc.rmd"
+author: "Gustav Poulsgaard"
+date: "9/22/2022"
+output: html_document
+---
+
+## load packages
+```{r load packages, message=FALSE, warning=FALSE}
+options(scipen = 999)
+library(tidyverse) # data manipulation, visualization
+library(data.table) # FAST data manipulation
+library(rjson) # load JSON format data as R object
+library(lubridate) # data format manipulation
+library(patchwork) # arrange ggplots
+library(glue)
+```
+
+
+## Weather analysis
+
+```{r}
+# download data manually from https://www.dmi.dk/friedata/observationer/
+# or
+# download weather data through API --> see below
+
+parameters_of_interest <- readLines("data/weather/README.md", n = 30)[21:30]
+
+# get your personal api-key from a place you saved it
+apikey <- readLines("data/weather/README.md", n = 4)[4]
+```
+
+
+```{r}
+# define function that access data on the DMI Open Data website
+fetch_weather_param <- function(param, nobs=10^4){
+  # nobs must be an integer between 1 and 300,000
+  if(nobs>3*10^5) stop("number of requested observations cannot be larger than 300,000")
+  # glue nobs, parameter of interest, and api-key into url 
+  url <- str_glue("https://dmigw.govcloud.dk/v2/metObs/collections/observation/items?limit={nobs}&datetime=2013-01-01T00:00:00Z/2021-12-31T23:59:59Z&stationId=06074&parameterId={param}&api-key={apikey}")
+  # download json data from url
+  rjson::fromJSON(file = url)
+}
+
+frollmean()
+
+# define function that transform JSON format to data.frame
+json_to_df <- function(json){
+  ldf <- lapply(1:length(json$features),
+         function(i) dplyr::bind_cols( json$features[[i]]$properties ) )
+  df <- rbindlist(ldf)
+  df %>% pivot_wider(id_cols = c("stationId","observed"),
+                     names_from="parameterId", values_from="value")
+}
+```
+
+
+
+
+```{r}
+# apply functions with your favorite parameters
+# here: wind, rain and temp
+ldf <- lapply(parameters_of_interest[c(1,4,8)],
+              function(param){
+                param_json <- fetch_weather_param(param = param, nobs = 10^5)
+                param_df <- json_to_df(param_json)
+                })
+# merge data
+dt_weather <- Reduce("merge", ldf) %>% as.data.table()
+# make data-observations to a data format
+dt_weather[, observed := as_datetime(observed)]
+
+# add datatime variables
+dt_weather[, `:=`(year=year(observed),
+         month=month(observed),
+         day=day(observed),
+         weekday=wday(observed, week_start = 1),
+         weekday_label=wday(observed, week_start = 1, label = TRUE),
+         hour=hour(observed))]
+
+# check that we have the preferred data range (from 2013 to 2022; both inclusive)
+dt_weather[, range(observed)]
+
+
+dt_weather_day <- dt_weather[!is.na(precip_dur_past1h) & hour>=8 & hour<=20,
+           .(precip=sum(precip_dur_past1h), wind=median(wind_speed_past1h),
+             temp=mean(temp_mean_past1h)),
+           by=.(year, month, day, weekday, weekday_label)]
+head(dt_weather_day)
+```
+
